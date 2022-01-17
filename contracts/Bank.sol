@@ -19,6 +19,8 @@ contract Bank {
         address indexed token, // token that was deposited
         uint256 amount // amount of token that was deposited
     );
+
+    
     // Event emitted when a user makes a withdrawal
     event Withdraw(
         address indexed _from, // account of user who withdrew funds
@@ -55,11 +57,10 @@ contract Bank {
 
     address public constant ETHADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;  
 
-    mapping(address => Account) hakAccount;
-    mapping(address => Account) ethAccount;
+    mapping(address => mapping(address=> Account)) accounts;
     mapping(address => Account) loanAccount;
 
-    constructor(IERC20 _HAK, IPriceOracle _priceOracle) {
+    constructor(IPriceOracle _priceOracle, IERC20 _HAK) {
         HAK = _HAK;
         priceOracle = _priceOracle;
     }
@@ -75,6 +76,25 @@ contract Bank {
      */
     function deposit(address token, uint256 amount) payable external returns (bool) {
         require(token == address(HAK) || token == ETHADDRESS, "token not supported");
+               
+        if (accounts[msg.sender][token].deposit>0) {
+            _calculateInterest(token);
+        } else {
+            accounts[msg.sender][token].lastInterestBlock = block.number;
+        }
+
+        
+
+        if (token == address(HAK)) {
+            accounts[msg.sender][token].deposit += amount; 
+            HAK.transferFrom(msg.sender, address(this), amount);
+        } else {
+            accounts[msg.sender][token].deposit += msg.value; 
+        }
+
+        emit Deposit(msg.sender, token, amount);
+
+        return true;
     }
 
     /**
@@ -91,7 +111,29 @@ contract Bank {
      *           otherwise revert.
      */
     function withdraw(address token, uint256 amount) external returns (uint256) {
+        require(token == address(HAK) || token == ETHADDRESS, "token not supported");
+        require(accounts[msg.sender][token].deposit>0,"no balance");
+        require(amount <= accounts[msg.sender][token].deposit,"amount exceeds balance");
 
+        _calculateInterest(token);
+
+        uint transf = amount;
+        if (amount==0) {
+            transf =  accounts[msg.sender][token].deposit;
+        } 
+
+        accounts[msg.sender][token].deposit-=transf;
+        transf += accounts[msg.sender][token].interest;
+        accounts[msg.sender][token].interest = 0;
+
+        if (token == address(HAK)){
+            HAK.transfer(msg.sender, transf);
+        } else {
+            payable(msg.sender).transfer(transf);
+        }
+        emit Withdraw(msg.sender, token, transf);
+
+        return transf;
     }
       
     /**
@@ -107,7 +149,28 @@ contract Bank {
      * @return - the current collateral ratio.
      */
     function borrow(address token, uint256 amount) external returns (uint256) {
+        require(accounts[msg.sender][address(HAK)].deposit>0,"no collateral deposited");
 
+        //(getBalance(address(HAK))*priceOracle.getVirtualPrice(address(HAK))* 10000) / (1 ether * (loanAccount[account].deposit+interest));
+        uint amountToBorrow = amount;
+
+        if (loanAccount[msg.sender].deposit>0) {
+            _calculateLoanInterest();
+        } else {
+            loanAccount[msg.sender].lastInterestBlock = block.number;
+        }
+        if (amount==0) {
+            amountToBorrow = ((getBalance(address(HAK))*priceOracle.getVirtualPrice(address(HAK))* 10000) / (1 ether * 15000))-loanAccount[msg.sender].interest-loanAccount[msg.sender].deposit;
+        }
+        loanAccount[msg.sender].deposit += amountToBorrow; 
+
+        uint collateral = getCollateralRatio(token,msg.sender);
+
+        require(collateral>=15000,"borrow would exceed collateral ratio");
+        payable(msg.sender).transfer(amountToBorrow);
+        emit Borrow(msg.sender,token,amountToBorrow,collateral);
+
+        return collateral;
     }
      
     /**
@@ -150,8 +213,20 @@ contract Bank {
      *           If the account has deposited token, but has not borrowed anything then 
      *           return MAX_INT.
      */
-    function getCollateralRatio(address token, address account) view external returns (uint256) {
+    function getCollateralRatio(address token, address account) view public returns (uint256) {
+        if (accounts[account][address(HAK)].deposit == 0) {
+            return 0;
+        }
+        if (loanAccount[account].deposit == 0) {
 
+            return type(uint256).max;
+        }
+        uint blocks = block.number - loanAccount[account].lastInterestBlock;
+        uint interest = loanAccount[account].interest+ loanAccount[account].deposit*5*blocks/10000;
+        
+        return (getBalance(address(HAK))*priceOracle.getVirtualPrice(address(HAK))* 10000) / (1 ether * (loanAccount[account].deposit+interest));
+        
+        
     }
 
     /**
@@ -160,7 +235,27 @@ contract Bank {
      * @param token - the address of the token for which the balance is computed.
      * @return - the value of the caller's balance with interest, excluding debts.
      */
-    function getBalance(address token) view external returns (uint256) {
-        
+    function getBalance(address token) view public returns (uint256) {
+        require(token == address(HAK) || token == ETHADDRESS, "token not supported");
+
+        uint blocks = block.number - accounts[msg.sender][token].lastInterestBlock;
+        uint interest = accounts[msg.sender][token].interest+accounts[msg.sender][token].deposit*3*blocks/10000;
+        return accounts[msg.sender][token].deposit+interest;
     }
+
+    function _calculateInterest(address token) private {
+
+        uint blocks = block.number - accounts[msg.sender][token].lastInterestBlock;
+        accounts[msg.sender][token].interest+= accounts[msg.sender][token].deposit*3*blocks/10000;
+        accounts[msg.sender][token].lastInterestBlock = block.number;
+
+    } 
+
+    function _calculateLoanInterest() private returns (uint) {
+
+        uint blocks = block.number - loanAccount[msg.sender].lastInterestBlock;
+        loanAccount[msg.sender].interest+= loanAccount[msg.sender].deposit*5*blocks/10000;
+        loanAccount[msg.sender].lastInterestBlock = block.number;
+    }
+    
 }
