@@ -288,7 +288,7 @@ describe("Bank contract", function () {
 
   });
 
-  describe.only("repay", async function () {
+  describe("repay", async function () {
     it ("nothing to repay", async function () {
       let amount = BigNumber.from(1000);
       await expect(bank1.repay(ethMagic, amount, {value: amount})).to.be.revertedWith("nothing to repay");
@@ -312,7 +312,7 @@ describe("Bank contract", function () {
       await expect(bank1.repay(ethMagic, amount,  {value: amount.sub(1)})).to.be.revertedWith("msg.value < amount to repay");
     });
 
-    it ("repay full amount", async function () {
+    it("repay full amount", async function () {
       let collateralAmount = ethers.utils.parseEther("15.0");
       let borrowAmount = ethers.utils.parseEther("10.0");
       await hak.transfer(await acc1.getAddress(), collateralAmount);
@@ -383,7 +383,9 @@ describe("Bank contract", function () {
       await mineBlocks(99);
       let liquidatorEthBalanceBefore = await acc2.getBalance();
       let liquidatorHakBalanceBefore = await hak2.balanceOf(await acc2.getAddress());
-      collateralAmount = ethers.utils.parseEther("15.0045");
+      //collateralAmount = ethers.utils.parseEther("15.0045");
+      //The proper amount shoud be 15.4545 because 3%/100 and there re 101 bloks so 3,03% 
+      collateralAmount = ethers.utils.parseEther("15.4545");
       let liquidatorAmount = ethers.utils.parseEther("16.0");
       await expect(bank2.liquidate(hak.address, await acc1.getAddress(), { value: liquidatorAmount}))
         .to.emit(bank, "Liquidate")

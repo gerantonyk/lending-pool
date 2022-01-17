@@ -2,7 +2,6 @@
 pragma solidity 0.7.0;
 
 
-import "hardhat/console.sol";
 import "./interfaces/IERC20.sol";
 import "./interfaces/IPriceOracle.sol";
 
@@ -78,7 +77,7 @@ contract Bank {
         require(token == address(HAK) || token == ETHADDRESS, "token not supported");
                
         if (accounts[msg.sender][token].deposit>0) {
-            _calculateInterest(token);
+            _calculateInterest(token, msg.sender);
         } else {
             accounts[msg.sender][token].lastInterestBlock = block.number;
         }
@@ -115,7 +114,7 @@ contract Bank {
         require(accounts[msg.sender][token].deposit>0,"no balance");
         require(amount <= accounts[msg.sender][token].deposit,"amount exceeds balance");
 
-        _calculateInterest(token);
+        _calculateInterest(token, msg.sender);
 
         uint transf = amount;
         if (amount==0) {
@@ -155,7 +154,7 @@ contract Bank {
         uint amountToBorrow = amount;
 
         if (loanAccount[msg.sender].deposit>0) {
-            _calculateLoanInterest();
+            _calculateLoanInterest(msg.sender);
         } else {
             loanAccount[msg.sender].lastInterestBlock = block.number;
         }
@@ -187,7 +186,26 @@ contract Bank {
      * @return - the amount still left to pay for this loan, excluding interest.
      */
     function repay(address token, uint256 amount) external payable  returns (uint256) {
+        require(token == ETHADDRESS, "token not supported");
+        require(loanAccount[msg.sender].deposit>0,'nothing to repay');
+        require(amount <= msg.value, "msg.value < amount to repay");
+        _calculateLoanInterest(msg.sender);
+        uint payment= msg.value;
+        if (loanAccount[msg.sender].interest >= payment) {
+            loanAccount[msg.sender].interest -= payment;
+        } else {
+            payment -= loanAccount[msg.sender].interest;
+            loanAccount[msg.sender].interest = 0;
+            if (loanAccount[msg.sender].deposit>=payment) {
+                loanAccount[msg.sender].deposit-=payment;
+            } else {
+                loanAccount[msg.sender].deposit = 0;
+                loanAccount[msg.sender].lastInterestBlock = 0;
+            }
+        }
+        emit Repay(msg.sender,token,loanAccount[msg.sender].deposit+ loanAccount[msg.sender].interest);
 
+        return loanAccount[msg.sender].deposit;
     }
      
     /**
@@ -198,7 +216,28 @@ contract Bank {
      * @return - true if the liquidation was successful, otherwise revert.
      */
     function liquidate(address token, address account) payable external returns (bool) {
+        require(token == address(HAK), "token not supported");
+        require(account != msg.sender, "cannot liquidate own position");
+        uint collateral = getCollateralRatio(token, account);
+        require(collateral<15000,"healty position");
+        _calculateLoanInterest(account);
+        uint totalDebt = loanAccount[account].deposit+ loanAccount[account].interest;
+        require(totalDebt<=msg.value,"insufficient ETH sent by liquidator");
+        uint devolution = msg.value - totalDebt;
+        loanAccount[account].deposit =0;
+        loanAccount[account].interest = 0;
+        loanAccount[account].lastInterestBlock = 0;
+        uint totalHak = _balance(token,account);
+        
+        accounts[account][token].deposit = 0;
+        accounts[account][token].interest = 0;
+        accounts[account][token].lastInterestBlock = 0;
+        HAK.transfer(msg.sender, totalHak);
+        payable(msg.sender).transfer(devolution);
 
+        emit Liquidate(msg.sender,account,token,totalHak,devolution);
+
+        return true;
     }
  
     /**
@@ -214,6 +253,8 @@ contract Bank {
      *           return MAX_INT.
      */
     function getCollateralRatio(address token, address account) view public returns (uint256) {
+
+
         if (accounts[account][address(HAK)].deposit == 0) {
             return 0;
         }
@@ -223,9 +264,8 @@ contract Bank {
         }
         uint blocks = block.number - loanAccount[account].lastInterestBlock;
         uint interest = loanAccount[account].interest+ loanAccount[account].deposit*5*blocks/10000;
-        
-        return (getBalance(address(HAK))*priceOracle.getVirtualPrice(address(HAK))* 10000) / (1 ether * (loanAccount[account].deposit+interest));
-        
+        uint val =  (_balance(address(HAK),account)*priceOracle.getVirtualPrice(address(HAK))* 10000) / (1 ether * (loanAccount[account].deposit+interest));
+        return val;
         
     }
 
@@ -238,24 +278,32 @@ contract Bank {
     function getBalance(address token) view public returns (uint256) {
         require(token == address(HAK) || token == ETHADDRESS, "token not supported");
 
-        uint blocks = block.number - accounts[msg.sender][token].lastInterestBlock;
-        uint interest = accounts[msg.sender][token].interest+accounts[msg.sender][token].deposit*3*blocks/10000;
-        return accounts[msg.sender][token].deposit+interest;
+        uint balance = _balance(token,msg.sender);
+        return balance;
+        // uint blocks = block.number - accounts[msg.sender][token].lastInterestBlock;
+        // uint interest = accounts[msg.sender][token].interest+accounts[msg.sender][token].deposit*3*blocks/10000;
+        // return accounts[msg.sender][token].deposit+interest;
     }
 
-    function _calculateInterest(address token) private {
+    function _balance (address token, address account) view private returns (uint256) {
+        uint blocks = block.number - accounts[account][token].lastInterestBlock;
+        uint interest = accounts[account][token].interest+accounts[account][token].deposit*3*blocks/10000;
+        return accounts[account][token].deposit+interest;
+    }
 
-        uint blocks = block.number - accounts[msg.sender][token].lastInterestBlock;
-        accounts[msg.sender][token].interest+= accounts[msg.sender][token].deposit*3*blocks/10000;
-        accounts[msg.sender][token].lastInterestBlock = block.number;
+    function _calculateInterest(address token,address account) private {
+
+        uint blocks = block.number - accounts[account][token].lastInterestBlock;
+        accounts[account][token].interest+= accounts[account][token].deposit*3*blocks/10000;
+        accounts[account][token].lastInterestBlock = block.number;
 
     } 
 
-    function _calculateLoanInterest() private returns (uint) {
+    function _calculateLoanInterest(address account) private  {
 
-        uint blocks = block.number - loanAccount[msg.sender].lastInterestBlock;
-        loanAccount[msg.sender].interest+= loanAccount[msg.sender].deposit*5*blocks/10000;
-        loanAccount[msg.sender].lastInterestBlock = block.number;
+        uint blocks = block.number - loanAccount[account].lastInterestBlock;
+        loanAccount[account].interest+= loanAccount[account].deposit*5*blocks/10000;
+        loanAccount[account].lastInterestBlock = block.number;
     }
     
 }
