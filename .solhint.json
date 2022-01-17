@@ -1,0 +1,9 @@
+{
+  "extends": "solhint:warns",
+  "plugins": [],
+  "rules": {
+    "compiler-version": ["error", "^0.7.0"],
+    "avoid-suicide": "error",
+    "avoid-sha3": "warn"
+  }
+}
